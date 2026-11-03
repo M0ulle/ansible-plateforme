@@ -1,0 +1,192 @@
+---
+- name: Plateforme complète
+  hosts: srv
+  become: true
+
+  vars:
+    plateforme_dir: /srv/plateforme
+    plateforme_owner: alice
+    open_ports: [22, 80, 443]
+    status_host: status.lab
+    notif_host: notif.lab
+    caddy_tls_internal: true
+    docker_distro: "{{ ansible_facts['distribution'] | lower }}"
+
+  tasks:
+    - name: Durcir SSH
+      ansible.builtin.copy:
+        dest: /etc/ssh/sshd_config.d/10-durcissement.conf
+        content: |
+          PermitRootLogin no
+          PasswordAuthentication no
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Recharger SSH
+
+    - name: Vérifier la configuration SSH complète
+      ansible.builtin.command: sshd -t
+      changed_when: false
+
+    - name: Installer nftables
+      ansible.builtin.apt:
+        name: nftables
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Écrire les règles nftables
+      ansible.builtin.copy:
+        dest: /etc/nftables.conf
+        content: |
+          #!/usr/sbin/nft -f
+          table inet filter
+          flush table inet filter
+          table inet filter {
+            chain input {
+              type filter hook input priority 0; policy drop;
+              iif lo accept
+              ct state established,related accept
+              ct state invalid drop
+              meta l4proto { icmp, ipv6-icmp } accept
+              tcp dport { {{ open_ports | join(', ') }} } accept
+            }
+          }
+        owner: root
+        group: root
+        mode: "0644"
+        validate: nft -c -f %s
+      notify: Recharger nftables
+
+    - name: Activer nftables au démarrage
+      ansible.builtin.service:
+        name: nftables
+        state: started
+        enabled: true
+
+    - name: Prérequis du dépôt Docker
+      ansible.builtin.apt:
+        name: [ca-certificates, curl, python3-debian]
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Ajouter le dépôt officiel Docker
+      ansible.builtin.deb822_repository:
+        name: docker
+        types: [deb]
+        uris: "https://download.docker.com/linux/{{ docker_distro }}"
+        suites: ["{{ ansible_facts['distribution_release'] }}"]
+        components: [stable]
+        signed_by: "https://download.docker.com/linux/{{ docker_distro }}/gpg"
+        state: present
+      register: docker_repo
+
+    - name: Installer Docker et le plugin Compose
+      ansible.builtin.apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-buildx-plugin
+          - docker-compose-plugin
+        state: present
+        update_cache: "{{ docker_repo is changed }}"
+
+    - name: Docker démarré et activé au boot
+      ansible.builtin.service:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Créer le dossier de la plateforme
+      ansible.builtin.file:
+        path: "{{ plateforme_dir }}"
+        state: directory
+        owner: "{{ plateforme_owner }}"
+        group: "{{ plateforme_owner }}"
+        mode: "0755"
+
+    - name: Écrire compose.yaml
+      ansible.builtin.copy:
+        dest: "{{ plateforme_dir }}/compose.yaml"
+        content: |
+          services:
+            caddy:
+              image: caddy:2
+              restart: unless-stopped
+              ports:
+                - "80:80"
+                - "443:443"
+              volumes:
+                - ./Caddyfile:/etc/caddy/Caddyfile:ro
+                - ./data/caddy:/data
+                - ./data/caddy-config:/config
+
+            kuma:
+              image: louislam/uptime-kuma:2
+              restart: unless-stopped
+              volumes:
+                - ./data/kuma:/app/data
+
+            ntfy:
+              image: binwiederhier/ntfy
+              command: serve
+              restart: unless-stopped
+              environment:
+                NTFY_BASE_URL: https://{{ notif_host }}
+                NTFY_BEHIND_PROXY: "true"
+                NTFY_CACHE_FILE: /var/cache/ntfy/cache.db
+                NTFY_AUTH_FILE: /var/lib/ntfy/user.db
+                NTFY_AUTH_DEFAULT_ACCESS: deny-all
+              volumes:
+                - ./data/ntfy/cache:/var/cache/ntfy
+                - ./data/ntfy/lib:/var/lib/ntfy
+        owner: "{{ plateforme_owner }}"
+        group: "{{ plateforme_owner }}"
+        mode: "0644"
+
+    - name: Écrire le Caddyfile
+      ansible.builtin.copy:
+        dest: "{{ plateforme_dir }}/Caddyfile"
+        content: |
+          {{ status_host }} {
+              reverse_proxy kuma:3001
+          {% if caddy_tls_internal %}
+              tls internal
+          {% endif %}
+          }
+
+          {{ notif_host }} {
+              reverse_proxy ntfy:80
+          {% if caddy_tls_internal %}
+              tls internal
+          {% endif %}
+          }
+        owner: "{{ plateforme_owner }}"
+        group: "{{ plateforme_owner }}"
+        mode: "0644"
+      register: caddyfile
+
+    - name: Démarrer la pile
+      community.docker.docker_compose_v2:
+        project_src: "{{ plateforme_dir }}"
+        state: present
+
+    - name: Recharger Caddy si le Caddyfile a changé
+      ansible.builtin.command: docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile
+      args:
+        chdir: "{{ plateforme_dir }}"
+      when: caddyfile is changed
+      changed_when: true
+
+  handlers:
+    - name: Recharger SSH
+      ansible.builtin.service:
+        name: ssh
+        state: reloaded
+
+    - name: Recharger nftables
+      ansible.builtin.service:
+        name: nftables
+        state: reloaded
