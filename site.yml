@@ -64,6 +64,21 @@
         state: started
         enabled: true
 
+    - name: Installer unattended-upgrades
+      ansible.builtin.apt:
+        name: unattended-upgrades
+        state: present
+
+    - name: Activer les mises à jour automatiques
+      ansible.builtin.copy:
+        dest: /etc/apt/apt.conf.d/20auto-upgrades
+        content: |
+          APT::Periodic::Update-Package-Lists "1";
+          APT::Periodic::Unattended-Upgrade "1";
+        owner: root
+        group: root
+        mode: "0644"
+
     - name: Prérequis du dépôt Docker
       ansible.builtin.apt:
         name: [ca-certificates, curl, python3-debian]
@@ -166,19 +181,12 @@
         owner: "{{ plateforme_owner }}"
         group: "{{ plateforme_owner }}"
         mode: "0644"
-      register: caddyfile
+      notify: Recharger Caddy
 
     - name: Démarrer la pile
       community.docker.docker_compose_v2:
         project_src: "{{ plateforme_dir }}"
         state: present
-
-    - name: Recharger Caddy si le Caddyfile a changé
-      ansible.builtin.command: docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile
-      args:
-        chdir: "{{ plateforme_dir }}"
-      when: caddyfile is changed
-      changed_when: true
 
   handlers:
     - name: Recharger SSH
@@ -190,3 +198,9 @@
       ansible.builtin.service:
         name: nftables
         state: reloaded
+
+    - name: Recharger Caddy
+      ansible.builtin.command: docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile
+      args:
+        chdir: "{{ plateforme_dir }}"
+      changed_when: true
