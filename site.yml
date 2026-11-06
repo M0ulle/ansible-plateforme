@@ -188,13 +188,6 @@
         project_src: "{{ plateforme_dir }}"
         state: present
 
-    - name: Recharger Caddy si le Caddyfile a changé
-      ansible.builtin.command: docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile
-      args:
-        chdir: "{{ plateforme_dir }}"
-      when: caddyfile is changed
-      changed_when: true
-
   handlers:
     - name: Recharger SSH
       ansible.builtin.service:
@@ -211,4 +204,3 @@
       args:
         chdir: "{{ plateforme_dir }}"
       changed_when: true
-
