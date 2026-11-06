@@ -64,6 +64,21 @@
         state: started
         enabled: true
 
+    - name: Installer unattended-upgrades
+      ansible.builtin.apt:
+        name: unattended-upgrades
+        state: present
+
+    - name: Activer les mises à jour automatiques
+      ansible.builtin.copy:
+        dest: /etc/apt/apt.conf.d/20auto-upgrades
+        content: |
+          APT::Periodic::Update-Package-Lists "1";
+          APT::Periodic::Unattended-Upgrade "1";
+        owner: root
+        group: root
+        mode: "0644"
+
     - name: Prérequis du dépôt Docker
       ansible.builtin.apt:
         name: [ca-certificates, curl, python3-debian]
