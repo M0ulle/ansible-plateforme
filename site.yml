@@ -181,7 +181,7 @@
         owner: "{{ plateforme_owner }}"
         group: "{{ plateforme_owner }}"
         mode: "0644"
-      register: caddyfile
+      notify: Recharger Caddy
 
     - name: Démarrer la pile
       community.docker.docker_compose_v2:
@@ -205,3 +205,10 @@
       ansible.builtin.service:
         name: nftables
         state: reloaded
+
+    - name: Recharger Caddy
+      ansible.builtin.command: docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile
+      args:
+        chdir: "{{ plateforme_dir }}"
+      changed_when: true
+
